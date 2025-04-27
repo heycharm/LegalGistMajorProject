@@ -15,7 +15,7 @@ const Index = () => {
       <section className="pt-24 pb-12 md:pt-32 md:pb-16 px-4">
         <div className="container mx-auto max-w-6xl">
           <div className="flex flex-col items-center text-center">
-            <h1 className="text-4xl md:text-6xl font-bold mb-6 tracking-tight text-gradient-primary">
+            <h1 className="text-4xl md:leading-[2]  md:text-6xl font-bold mb-6 tracking-tight text-gradient-primary">
               LegalGist
             </h1>
             <p className="text-xl md:text-2xl mb-8 max-w-2xl text-foreground/80">
