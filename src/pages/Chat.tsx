@@ -31,6 +31,9 @@ interface ChatDBMessage {
   response: string | null;
   message: string | null;
   conversation_id?: string | null;
+  attachments?: File[];
+ document_name?: string;   // ✅ matches Supabase
+  has_document?: boolean;  
 }
 
 interface Message {
@@ -39,6 +42,8 @@ interface Message {
   isBot: boolean;
   timestamp: Date;
   attachments?: File[];
+  documentName?: string; // Add this to store the document name
+  hasDocument?: boolean; // Add this to track if a message had a document
 }
 
 const Chat = () => {
@@ -106,6 +111,7 @@ const Chat = () => {
       if (conversationError) throw conversationError;
 
       if (conversationData && conversationData.length > 0) {
+        console.log("Fetched conversation data:", conversationData);
         setConversationId(chatId);
         processMessagesFromDB(conversationData);
         return;
@@ -172,6 +178,7 @@ const Chat = () => {
   };
 
   const processMessagesFromDB = (chatMessages: ChatDBMessage[]) => {
+    console.log("Raw messages from DB:", chatMessages);
     if (!chatMessages || chatMessages.length === 0) {
       setMessages([
         {
@@ -180,13 +187,19 @@ const Chat = () => {
             "Hello! I'm LegalGist, an AI legal assistant specialized in Indian Constitutional Law and IPC. How can I help you today?",
           isBot: true,
           timestamp: new Date(),
+          
         },
+        
       ]);
+      
       return;
+      
     }
-
+  
     const convertedMessages: Message[] = [
+      
       {
+        
         id: "welcome",
         content:
           "Hello! I'm LegalGist, an AI legal assistant specialized in Indian Constitutional Law and IPC. How can I help you today?",
@@ -194,29 +207,46 @@ const Chat = () => {
         timestamp: new Date(),
       },
     ];
-
-    for (const msg of chatMessages) {
-      if (msg.prompt) {
-        convertedMessages.push({
-          id: `user-${msg.id}`,
-          content: msg.prompt,
-          isBot: false,
-          timestamp: new Date(msg.created_at),
-        });
+  
+    
+      for (const msg of chatMessages) {
+        const sharedDocInfo = {
+          hasDocument: msg.has_document ?? false,
+          documentName: msg.document_name ?? "",
+        };
+        if (msg.prompt || sharedDocInfo.hasDocument)
+          {
+          // User's message
+          convertedMessages.push({
+            id: `user-${msg.id}`,
+            content: msg.prompt ?? '',    // 🛠️ use prompt instead of message
+            isBot: false,
+            timestamp: new Date(msg.created_at),
+            ...sharedDocInfo,
+            // hasDocument: msg.has_document || false,
+            // documentName: msg.document_name || "",
+          });
+        }
+        
+        if (msg.response) {
+          // Bot's reply
+          convertedMessages.push({
+            id: `bot-${msg.id}`,
+            content: msg.response,
+            isBot: true,
+            timestamp: new Date(msg.created_at),
+            // hasDocument: msg.has_document || false,
+            // documentName: msg.document_name || "",
+          });
+        }
       }
-
-      if (msg.response) {
-        convertedMessages.push({
-          id: `bot-${msg.id}`,
-          content: msg.response,
-          isBot: true,
-          timestamp: new Date(msg.created_at),
-        });
-      }
-    }
-
+      
+    
+  
     setMessages(convertedMessages);
+    console.log("Processed messages:", convertedMessages);
   };
+  
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -362,78 +392,77 @@ const Chat = () => {
 
   const handleSendMessage = async () => {
     if ((input.trim() === "" && !fileContents) || isLoading) return;
-
+  
     const userMessage: Message = {
       id: Date.now().toString(),
       content: input.trim(),
       isBot: false,
       timestamp: new Date(),
       attachments: selectedFiles.length > 0 ? selectedFiles : undefined,
+      documentName: selectedFiles.length > 0 ? selectedFiles[0].name : undefined,
+      hasDocument: selectedFiles.length > 0,
     };
-
+  
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
     setIsLoading(true);
-    setSelectedFiles([]);
-    setFileContents(null);
-
+  
     try {
       if (!conversationId) {
         setConversationId(uuidv4());
       }
-
+  
       // Construct the prompt with PDF context if available
       let prompt = input.trim();
       if (pdfContent) {
         prompt = `Based on the following document:\n\n${pdfContent}\n\nAnswer this question:\n${input.trim()}`;
       }
-
+  
       const { data, error } = await supabase.functions.invoke("legal-chat", {
         body: {
           prompt: prompt,
           fileContent: pdfContent,
         },
       });
-
+  
       if (error) {
         console.error("Edge Function error:", error);
         throw new Error(error.message || "Failed to get response from AI");
       }
-
+  
       if (!data || !data.response) {
         throw new Error("No response received from AI");
       }
-
+  
       const botMessage: Message = {
         id: (Date.now() + 1).toString(),
         content: data.response,
         isBot: true,
         timestamp: new Date(),
       };
-
+  
       setMessages((prev) => [...prev, botMessage]);
-
+  
       if (user) {
+        // Include document name and has_document flag
         await supabase.from("chats").insert({
           user_id: user.id,
           prompt: input.trim(),
           response: data.response,
           conversation_id: conversationId,
           message: pdfContent ? "Document Analysis" : input.trim(),
+          document_content: pdfContent,
+          document_name: selectedFiles.length > 0 ? selectedFiles[0].name : null,
+          has_document: true,
         });
       }
-
-      // Only clear file contents if we're not asking follow-up questions
-      if (
-        !input.trim().toLowerCase().includes("pdf") &&
-        !input.trim().toLowerCase().includes("document")
-      ) {
-        setSelectedFiles([]);
-        setFileContents(null);
-      }
+  
+      // We can now clear selectedFiles from the UI, but we've saved the info to the database
+      setSelectedFiles([]);
+      setFileContents(null);
     } catch (error) {
       console.error("Error sending message:", error);
-
+  
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
         content:
@@ -441,9 +470,9 @@ const Chat = () => {
         isBot: true,
         timestamp: new Date(),
       };
-
+  
       setMessages((prev) => [...prev, errorMessage]);
-
+  
       toast({
         title: "Error",
         description:
@@ -466,192 +495,208 @@ const Chat = () => {
 
   return (
     <div className="flex flex-col bg-background">
-  <Navbar />
-  <SidebarProvider defaultOpen>
-    <div className="flex flex-1 overflow-hidden pt-16">
-      <ChatSidebar onStartNewChat={startNewChat} />
-
-      <div className="flex flex-col flex-1 overflow-hidden">
-        {/* CHAT MESSAGES SCROLL AREA */}
-        <div className="flex-1 overflow-y-auto px-4 md:px-6 py-4 space-y-6 h-0 custom-scrollbar">
-          {isLoadingChat ? (
-            <div className="flex items-center justify-center ">
-              <Loader2 className="h-6 w-6 animate-spin text-primary" />
-              <span className="ml-2 text-sm text-muted-foreground">
-                Loading conversation...
-              </span>
-            </div>
-          ) : (
-            messages.map((message) => (
-              <div
-                key={message.id}
-                className={`flex ${
-                  message.isBot ? "justify-start" : "justify-end"
-                }`}
-              >
+    <Navbar />
+    <SidebarProvider defaultOpen>
+      <div className="flex flex-1 overflow-hidden pt-16">
+        <ChatSidebar onStartNewChat={startNewChat} />
+  
+        <div className="flex flex-col flex-1 overflow-hidden">
+          {/* CHAT MESSAGES SCROLL AREA */}
+          <div className="flex-1 overflow-y-auto px-4 md:px-6 py-4 space-y-6 h-0 custom-scrollbar">
+            {isLoadingChat ? (
+              <div className="flex items-center justify-center ">
+                <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                <span className="ml-2 text-sm text-muted-foreground">
+                  Loading conversation...
+                </span>
+              </div>
+            ) : (
+              messages.map((message) => {
+                console.log("Message data:", message);
+                return (
                 <div
-                  className={`flex gap-3 mt-20 max-w-[80%] lg:max-w-[70%] ${
-                    message.isBot ? "flex-row" : "flex-row-reverse"
+                  key={message.id}
+                  className={`flex ${
+                    message.isBot ? "justify-start" : "justify-end"
                   }`}
                 >
                   <div
-                    className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-1 ${
-                      message.isBot ? "bg-primary/20" : "bg-accent/30"
+                    className={`flex gap-3 mt-20 max-w-[80%] lg:max-w-[70%] ${
+                      message.isBot ? "flex-row" : "flex-row-reverse"
                     }`}
                   >
-                    {message.isBot ? (
-                      <Bot className="w-4 h-4 text-primary" />
-                    ) : (
-                      <UserIcon className="w-4 h-4 text-accent" />
-                    )}
-                  </div>
-                  <div className="flex flex-col space-y-1">
-                    <Card
-                      className={`overflow-hidden shadow-sm ${
-                        message.isBot
-                          ? "border-primary/20 bg-background"
-                          : "border-accent/20 bg-muted/30"
+                    <div
+                      className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-1 ${
+                        message.isBot ? "bg-primary/20" : "bg-accent/30"
                       }`}
                     >
-                      <CardContent className="p-3 text-sm whitespace-pre-wrap">
-                        {message.content}
+                      {message.isBot ? (
+                        <Bot className="w-4 h-4 text-primary" />
+                      ) : (
+                        <UserIcon className="w-4 h-4 text-accent" />
+                      )}
+                    </div>
+                    <div className="flex flex-col space-y-1">
+                      <Card
+                        className={`overflow-hidden shadow-sm ${
+                          message.isBot
+                            ? "border-primary/20 bg-background"
+                            : "border-accent/20 bg-muted/30"
+                        }`}
+                      >
+                    <CardContent className="p-3 text-sm whitespace-pre-wrap">
+  {message.content} 
 
-                        {message.attachments &&
-                          message.attachments.length > 0 && (
-                            <div className="mt-2 space-y-1">
-                              {message.attachments.map((file, index) => (
-                                <div
-                                  key={index}
-                                  className="text-xs bg-accent/10 rounded-md p-1 px-2 flex items-center gap-1"
-                                >
-                                  <FileText className="w-3 h-3" />
-                                  {file.name}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                      </CardContent>
-                    </Card>
-                    <span className="text-xs text-muted-foreground px-2">
-                      {formatTime(message.timestamp)}
-                    </span>
+  {(message.attachments?.length > 0 || message.hasDocument) && (
+  <div className="mt-2 space-y-1">
+    {/* Render any actual file objects if present */}
+    {message.attachments?.map((file, index) => (
+      <div
+        key={`attached-${message.id}-${index}`}
+        className="text-xs bg-accent/10 rounded-md p-1 px-2 flex items-center gap-1"
+      >
+        <FileText className="w-3 h-3" />
+        {message.documentName}
+      </div>
+    ))}
+
+    {/* Fallback: render documentName if no attachments */}
+    {(!message.attachments?.length && message.hasDocument && message.documentName) && (
+      <div
+        className="text-xs bg-accent/10 rounded-md p-1 px-2 flex items-center gap-1"
+      >
+        <FileText className="w-3 h-3" />
+        {message.documentName}
+      </div>
+    )}
+  </div>
+)}
+
+
+</CardContent>
+
+                      </Card>
+                      <span className="text-xs text-muted-foreground px-2">
+                        {formatTime(message.timestamp)}
+                      </span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))
-          )}
-
-          {isLoading && (
-            <div className="flex justify-start">
-              <div className="flex gap-3 max-w-[80%]">
-                <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center mt-1">
-                  <Bot className="w-4 h-4 text-primary" />
-                </div>
-                <div className="space-y-1">
-                  <div className="h-6 w-24 animate-pulse rounded-full bg-muted"></div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          <div ref={messagesEndRef} />
-        </div>
-
-        {/* INPUT AREA */}
-        <div className="border-t p-3 bg-background">
-          <form onSubmit={handleSubmit} className="relative">
-            {selectedFiles.length > 0 && (
-              <div className="absolute bottom-full mb-2 left-0 right-0">
-                <div className="bg-background/80 backdrop-blur-sm rounded-md p-2 flex flex-wrap gap-2 border">
-                  {selectedFiles.map((file, index) => (
-                    <div
-                      key={index}
-                      className="bg-accent/20 text-xs rounded-full px-2 py-1 flex items-center"
-                    >
-                      {isProcessingFile ? (
-                        <Loader2 className="h-3 w-3 animate-spin mr-1" />
-                      ) : (
-                        <FileText className="h-3 w-3 mr-1" />
-                      )}
-                      <span className="truncate max-w-[150px]">
-                        {file.name}
-                      </span>
-                      <button
-                        type="button"
-                        className="ml-1 text-muted-foreground hover:text-foreground"
-                        onClick={() => handleRemoveFile(index)}
-                        disabled={isProcessingFile}
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </div>
-                  ))}
-                  {isProcessingFile && (
-                    <span className="text-xs text-muted-foreground">
-                      Processing document...
-                    </span>
-                  )}
+              );
+            })
+            )}
+  
+            {isLoading && (
+              <div className="flex justify-start">
+                <div className="flex gap-3 max-w-[80%]">
+                  <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center mt-1">
+                    <Bot className="w-4 h-4 text-primary" />
+                  </div>
+                  <div className="space-y-1">
+                    <div className="h-6 w-24 animate-pulse rounded-full bg-muted"></div>
+                  </div>
                 </div>
               </div>
             )}
-
-            <div className="relative flex items-center gap-2 bg-background rounded-lg border shadow-sm">
-              <input
-                type="file"
-                ref={fileInputRef}
-                onChange={handleFileChange}
-                className="hidden"
-                accept=".pdf,.txt,.doc,.docx"
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                onClick={handleFileButtonClick}
-                className="flex-shrink-0"
-                aria-label="Attach file"
-                disabled={isProcessingFile || isLoading}
-              >
-                {isProcessingFile ? (
-                  <Loader2 className="h-5 w-5 animate-spin" />
-                ) : (
-                  <Paperclip className="h-5 w-5" />
-                )}
-              </Button>
-              <Input
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder={
-                  fileContents
-                    ? "Ask about the uploaded document..."
-                    : "Ask about Indian Constitution or IPC..."
-                }
-                className="border-none focus-visible:ring-1 focus-visible:ring-primary h-10"
-                disabled={isLoading}
-              />
-              <Button
-                type="submit"
-                variant="default"
-                size="sm"
-                className="flex-shrink-0"
-                disabled={
-                  isLoading || (input.trim() === "" && !fileContents)
-                }
-              >
-                {isLoading ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Send className="h-4 w-4" />
-                )}
-                <span className="sr-only">Send</span>
-              </Button>
-            </div>
-          </form>
+  
+            <div ref={messagesEndRef} />
+          </div>
+  
+          {/* INPUT AREA */}
+          <div className="border-t p-3 bg-background">
+            <form onSubmit={handleSubmit} className="relative">
+              {selectedFiles.length > 0 && (
+                <div className="absolute bottom-full mb-2 left-0 right-0">
+                  <div className="bg-background/80 backdrop-blur-sm rounded-md p-2 flex flex-wrap gap-2 border">
+                    {selectedFiles.map((file, index) => (
+                      <div
+                        key={index}
+                        className="bg-accent/20 text-xs rounded-full px-2 py-1 flex items-center"
+                      >
+                        {isProcessingFile ? (
+                          <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                        ) : (
+                          <FileText className="w-3 h-3 mr-1" />
+                        )}
+                        <span className="truncate max-w-[150px]">
+                          {file.name}
+                        </span>
+                        <button
+                          type="button"
+                          className="ml-1 text-muted-foreground hover:text-foreground"
+                          onClick={() => handleRemoveFile(index)}
+                          disabled={isProcessingFile}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                    {isProcessingFile && (
+                      <span className="text-xs text-muted-foreground">
+                        Processing document...
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+  
+              <div className="relative flex items-center gap-2 bg-background rounded-lg border shadow-sm">
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleFileChange}
+                  className="hidden"
+                  accept=".pdf,.txt,.doc,.docx"
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={handleFileButtonClick}
+                  className="flex-shrink-0"
+                  aria-label="Attach file"
+                  disabled={isProcessingFile || isLoading}
+                >
+                  {isProcessingFile ? (
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                  ) : (
+                    <Paperclip className="h-5 w-5" />
+                  )}
+                </Button>
+                <Input
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  placeholder={
+                    fileContents
+                      ? "Ask about the uploaded document..."
+                      : "Ask about Indian Constitution or IPC..."
+                  }
+                  className="border-none focus-visible:ring-1 focus-visible:ring-primary h-10"
+                  disabled={isLoading}
+                />
+                <Button
+                  type="submit"
+                  variant="default"
+                  size="sm"
+                  className="flex-shrink-0"
+                  disabled={
+                    isLoading || (input.trim() === "" && !fileContents)
+                  }
+                >
+                  {isLoading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Send className="h-4 w-4" />
+                  )}
+                  <span className="sr-only">Send</span>
+                </Button>
+              </div>
+            </form>
+          </div>
         </div>
       </div>
-    </div>
-  </SidebarProvider>
-</div>
+    </SidebarProvider>
+  </div>
 
   );
 };

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { MessageSquare, Trash2, MessageSquarePlus, PanelLeftClose, ChevronRight } from "lucide-react";
+import { MessageSquare, Trash2, MessageSquarePlus } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "@/components/ui/use-toast";
@@ -19,7 +19,8 @@ import {
 } from "@/components/ui/sidebar";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tooltip, TooltipProvider, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
+import { Sheet, SheetTrigger, SheetContent } from "@/components/ui/sheet";
 
 interface ChatHistory {
   id: string;
@@ -41,25 +42,19 @@ export const ChatSidebar = ({ onStartNewChat }: ChatSidebarProps) => {
   const { user } = useAuth();
   const navigate = useNavigate();
   const { state } = useSidebar();
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
 
   useEffect(() => {
     if (user?.id) {
       fetchChatHistory();
-      
       const channel = supabase
         .channel('chat-updates')
-        .on(
-          'postgres_changes',
-          {
-            event: '*',
-            schema: 'public',
-            table: 'chats',
-            filter: `user_id=eq.${user?.id}`,
-          },
-          () => {
-            fetchChatHistory();
-          }
-        )
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'chats',
+          filter: `user_id=eq.${user.id}`,
+        }, fetchChatHistory)
         .subscribe();
 
       return () => {
@@ -70,10 +65,9 @@ export const ChatSidebar = ({ onStartNewChat }: ChatSidebarProps) => {
 
   const fetchChatHistory = async () => {
     if (!user?.id) return;
-    
+
     try {
       setIsLoading(true);
-      
       const { data, error } = await supabase
         .from('chats')
         .select('*')
@@ -81,17 +75,15 @@ export const ChatSidebar = ({ onStartNewChat }: ChatSidebarProps) => {
         .order('created_at', { ascending: false });
 
       if (error) throw error;
-      
+
       if (!data) {
         setChatHistory([]);
         return;
       }
-      
+
       const conversationMap = new Map<string, ChatHistory>();
-      
       for (const chat of data) {
         const conversationId = chat.conversation_id || chat.id;
-        
         if (!conversationMap.has(conversationId)) {
           conversationMap.set(conversationId, {
             id: chat.id,
@@ -104,9 +96,8 @@ export const ChatSidebar = ({ onStartNewChat }: ChatSidebarProps) => {
           });
         }
       }
-      
-      const uniqueConversations = Array.from(conversationMap.values());
-      setChatHistory(uniqueConversations);
+
+      setChatHistory(Array.from(conversationMap.values()));
     } catch (error: any) {
       console.error('Error fetching chat history:', error);
       toast({
@@ -121,63 +112,35 @@ export const ChatSidebar = ({ onStartNewChat }: ChatSidebarProps) => {
 
   const handleOpenChat = (chatId: string, conversationId: string | null) => {
     navigate(`/chat?id=${conversationId || chatId}`);
+    setIsMobileSidebarOpen(false);
   };
 
   const handleDeleteChat = async (chatId: string, conversationId: string | null, e: React.MouseEvent) => {
     e.stopPropagation();
-    
-    if (!window.confirm("Are you sure you want to delete this chat?")) {
-      return;
-    }
-    
-    try {
-      console.log("Attempting to delete chat:", { chatId, conversationId });
-      
-      if (!user?.id) {
-        console.error("No authenticated user found");
-        throw new Error("You must be logged in to delete chats");
-      }
 
-      let deleteStatus;
-      
-      if (conversationId) {
-        deleteStatus = await supabase.functions.invoke('delete-conversation', {
-          body: { 
-            conversationId,
-            userId: user.id 
-          }
-        });
-        
-        console.log("Delete conversation response:", deleteStatus);
-      } else {
-        deleteStatus = await supabase.functions.invoke('delete-conversation', {
-          body: { 
-            chatId,
-            userId: user.id 
-          }
-        });
-        
-        console.log("Delete single chat response:", deleteStatus);
-      }
+    if (!window.confirm("Are you sure you want to delete this chat?")) return;
+
+    try {
+      if (!user?.id) throw new Error("You must be logged in to delete chats");
+
+      const deleteStatus = await supabase.functions.invoke('delete-conversation', {
+        body: conversationId
+          ? { conversationId, userId: user.id }
+          : { chatId, userId: user.id }
+      });
+
+      console.log("Delete response:", deleteStatus);
 
       await fetchChatHistory();
-      
-      toast({
-        description: "Chat deleted successfully",
-      });
-      
+      toast({ description: "Chat deleted successfully" });
+
       const urlParams = new URLSearchParams(window.location.search);
       const currentChatId = urlParams.get('id');
-      
       if (currentChatId === conversationId || currentChatId === chatId) {
-        console.log("Navigating away from deleted chat");
         navigate('/chat');
-        
-        if (onStartNewChat) {
-          onStartNewChat();
-        }
+        if (onStartNewChat) onStartNewChat();
       }
-      
+
     } catch (error: any) {
       console.error('Error deleting chat:', error);
       toast({
@@ -196,12 +159,9 @@ export const ChatSidebar = ({ onStartNewChat }: ChatSidebarProps) => {
     });
   };
 
-  return (
-    <Sidebar>
+  const SidebarContentComponent = () => (
+    <>
       <SidebarHeader className="border-b border-border/50 p-4 pt-16 flex justify-between items-center">
-        {/* <h2 className={`text-lg font-semibold ${state === 'collapsed' ? 'hidden' : ''}`}>
-          Conversations
-        </h2> */}
         <TooltipProvider>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -211,26 +171,23 @@ export const ChatSidebar = ({ onStartNewChat }: ChatSidebarProps) => {
                 size="icon"
                 className="hover:bg-accent/20 mt-[20px]"
               >
-                <MessageSquarePlus className="h-20 w-5  " />
+                <MessageSquarePlus className="h-5 w-5" />
                 <span className="sr-only">New Chat</span>
               </Button>
             </TooltipTrigger>
             {state === 'collapsed' && (
-              <TooltipContent side="right">
-                New Chat
-              </TooltipContent>
+              <TooltipContent side="right">New Chat</TooltipContent>
             )}
           </Tooltip>
         </TooltipProvider>
       </SidebarHeader>
+
       <SidebarContent>
         <ScrollArea className="h-[calc(100vh-5rem)]">
           <SidebarGroup>
             <SidebarMenu>
               {isLoading ? (
-                <div className="p-4 text-center text-sm text-muted-foreground">
-                  Loading...
-                </div>
+                <div className="p-4 text-center text-sm text-muted-foreground">Loading...</div>
               ) : chatHistory.length > 0 ? (
                 chatHistory.map((chat) => (
                   <SidebarMenuItem key={chat.id}>
@@ -240,12 +197,8 @@ export const ChatSidebar = ({ onStartNewChat }: ChatSidebarProps) => {
                     >
                       <MessageSquare className="h-4 w-4" />
                       <div className="flex-1 overflow-hidden">
-                        <p className="truncate font-medium">
-                          {chat.prompt || "New Conversation"}
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          {formatDate(chat.created_at)}
-                        </p>
+                        <p className="truncate font-medium">{chat.prompt || "New Conversation"}</p>
+                        <p className="text-xs text-muted-foreground">{formatDate(chat.created_at)}</p>
                       </div>
                     </SidebarMenuButton>
                     <SidebarMenuAction
@@ -265,6 +218,37 @@ export const ChatSidebar = ({ onStartNewChat }: ChatSidebarProps) => {
           </SidebarGroup>
         </ScrollArea>
       </SidebarContent>
-    </Sidebar>
+    </>
+  );
+
+  return (
+    <>
+      {/* Desktop Sidebar */}
+      <div className="hidden md:flex">
+        <Sidebar>
+          <SidebarContentComponent />
+        </Sidebar>
+      </div>
+
+      {/* Mobile Sidebar */}
+      <div className="md:hidden">
+        <Sheet open={isMobileSidebarOpen} onOpenChange={setIsMobileSidebarOpen}>
+          <SheetTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="fixed top-4 left-4 z-50 bg-background border border-border"
+            >
+              <MessageSquare className="h-5 w-5" />
+            </Button>
+          </SheetTrigger>
+          <SheetContent side="left" className="p-0">
+            <div className="h-full">
+              <SidebarContentComponent />
+            </div>
+          </SheetContent>
+        </Sheet>
+      </div>
+    </>
   );
 };

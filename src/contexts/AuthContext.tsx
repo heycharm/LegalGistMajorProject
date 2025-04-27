@@ -44,15 +44,22 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     return () => subscription.unsubscribe();
   }, [navigate]);
 
+  // const handleAuthSucess = (error: any) => {
+  //   console.error('Auth error:', error);
+  //   toast({
+  //     title: "Verificationn mail sent",
+  //     description: "Please check your email to verify your account.",
+  //     variant: "default",
+  //   });
+  // };
   const handleAuthError = (error: any) => {
     console.error('Auth error:', error);
     toast({
-      title: "Authentication Error",
+      title: "Authorization error",
       description: error.message,
       variant: "destructive",
     });
   };
-
   const signInWithPassword = async (email: string, password: string) => {
     try {
       const { error } = await supabase.auth.signInWithPassword({
@@ -92,7 +99,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   const signUp = async (email: string, password: string, name: string) => {
     try {
-      // Changed signUp to not require email verification
       const { error } = await supabase.auth.signUp({
         email,
         password,
@@ -100,26 +106,27 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           data: {
             full_name: name,
           },
-          // Auto confirm the email without verification
-          emailRedirectTo: window.location.origin,
+          emailRedirectTo: window.location.origin, // after they verify
         },
       });
-      
+  
       if (error) throw error;
-      
-      // If no error, we can try to sign in immediately since we're skipping verification
-      await signInWithPassword(email, password);
-      
+  
+      // Show success toast
       toast({
-        title: "Account created!",
-        description: "You have been signed in automatically.",
+        title: "Verification Email Sent!",
+        description: "Please check your email to verify your account before signing in.",
+        variant: "default", // Green/Normal
       });
+  
+      // No need to auto-signin here because user has to verify email first
+  
     } catch (error: any) {
       handleAuthError(error);
       throw error;
     }
   };
-
+  
   const signOut = async () => {
     try {
       const { error } = await supabase.auth.signOut();
