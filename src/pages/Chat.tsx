@@ -125,11 +125,11 @@ const Chat = () => {
 
       if (singleChatError) {
         console.error("Error loading chat:", singleChatError);
-        toast({
-          title: "Error",
-          description: "Chat conversation not found",
-          variant: "destructive",
-        });
+        // toast({
+        //   title: "Error",
+        //   description: "Chat conversation not found",
+        //   variant: "destructive",
+        // });
         navigate("/chat");
         return;
       }
