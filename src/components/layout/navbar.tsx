@@ -43,7 +43,7 @@ export function Navbar() {
           {/* Center - Logo */}
           <div className="flex-1 flex justify-center md:justify-start">
             <Link to="/" className="flex items-center space-x-2">
-              <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-primary to-primary/60 ml-[-80px]" >
+              <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-primary to-primary/60 " >
                 LegalGist
               </span>
             </Link>
