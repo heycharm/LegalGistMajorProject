@@ -32,8 +32,9 @@ interface ChatDBMessage {
   message: string | null;
   conversation_id?: string | null;
   attachments?: File[];
- document_name?: string;   // ✅ matches Supabase
+  document_name?: string;   // ✅ matches Supabase
   has_document?: boolean;  
+  law_category?: string;
 }
 
 interface Message {
@@ -44,6 +45,54 @@ interface Message {
   attachments?: File[];
   documentName?: string; // Add this to store the document name
   hasDocument?: boolean; // Add this to track if a message had a document
+  lawCategory?: string;
+}
+
+// New law keywords and categories
+const lawKeywords: Record<string, string[]> = {
+  "Criminal Law": [
+    "IPC", "FIR", "arrest", "bail", "charge sheet", "Section 302", "murder", "theft", "assault"
+  ],
+  "Family Law": [
+    "divorce", "alimony", "child custody", "Hindu Marriage Act", "Section 13", "maintenance", "dowry"
+  ],
+  "Contract Law": [
+    "breach of contract", "agreement", "consideration", "offer", "acceptance", "Indian Contract Act"
+  ],
+  "Property Law": [
+    "ownership", "partition", "title deed", "immovable property", "transfer of property", "land dispute"
+  ],
+  "Constitutional Law": [
+    "Article 14", "Article 32", "fundamental rights", "writ petition", "Supreme Court", "PIL"
+  ],
+  "Labour Law": [
+    "wages", "industrial dispute", "employee", "termination", "gratuity", "EPF", "bonus"
+  ],
+  "Corporate Law": [
+    "company act", "memorandum of association", "shareholder", "director", "LLP"
+  ],
+  "Cyber Law": [
+    "IT Act", "cybercrime", "data breach", "digital signature", "hacking", "phishing"
+  ]
+};
+
+function classifyLaw(text: string): string[] {
+  const scoreMap: Record<string, number> = {};
+  const lowerText = text.toLowerCase();
+
+  for (const category in lawKeywords) {
+    let score = 0;
+    lawKeywords[category].forEach(keyword => {
+      if (lowerText.includes(keyword.toLowerCase())) score++;
+    });
+    scoreMap[category] = score;
+  }
+
+  // Sort by highest score
+  const sorted = Object.entries(scoreMap).sort((a, b) => b[1] - a[1]);
+  if (sorted[0][1] === 0) return ["Unknown/General Law"];
+  // Return all categories with the highest score
+  return sorted.filter(([_, score]) => score === sorted[0][1]).map(([cat]) => cat);
 }
 
 const Chat = () => {
@@ -70,6 +119,7 @@ const Chat = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const [pdfContent, setPdfContent] = useState<string | null>(null);
+  const [lawCategory, setLawCategory] = useState<string>("Unknown");
 
   useEffect(() => {
     if (!conversationId) {
@@ -125,11 +175,11 @@ const Chat = () => {
 
       if (singleChatError) {
         console.error("Error loading chat:", singleChatError);
-        // toast({
-        //   title: "Error",
-        //   description: "Chat conversation not found",
-        //   variant: "destructive",
-        // });
+        toast({
+          title: "Error",
+          description: "Chat conversation not found",
+          variant: "destructive",
+        });
         navigate("/chat");
         return;
       }
@@ -219,12 +269,11 @@ const Chat = () => {
           // User's message
           convertedMessages.push({
             id: `user-${msg.id}`,
-            content: msg.prompt ?? '',    // 🛠️ use prompt instead of message
+            content: msg.prompt ?? '',
             isBot: false,
             timestamp: new Date(msg.created_at),
             ...sharedDocInfo,
-            // hasDocument: msg.has_document || false,
-            // documentName: msg.document_name || "",
+            lawCategory: msg.law_category,
           });
         }
         
@@ -235,8 +284,6 @@ const Chat = () => {
             content: msg.response,
             isBot: true,
             timestamp: new Date(msg.created_at),
-            // hasDocument: msg.has_document || false,
-            // documentName: msg.document_name || "",
           });
         }
       }
@@ -263,6 +310,9 @@ const Chat = () => {
           const content = await readFileContent(file);
           setFileContents(content);
           setPdfContent(content);
+          // Detect law category
+          const detectedCategories = classifyLaw(content);
+          setLawCategory(detectedCategories.join(', '));
           toast({
             title: "File processed",
             description: `Successfully extracted content from ${file.name}`,
@@ -276,6 +326,7 @@ const Chat = () => {
           });
           setFileContents(null);
           setPdfContent(null);
+          setLawCategory("Unknown");
         } finally {
           setIsProcessingFile(false);
         }
@@ -362,6 +413,7 @@ const Chat = () => {
   const handleRemoveFile = (index: number) => {
     setSelectedFiles((prev) => prev.filter((_, i) => i !== index));
     setFileContents(null);
+    setLawCategory("Unknown");
   };
 
   const handleFileButtonClick = () => {
@@ -454,6 +506,7 @@ const Chat = () => {
           document_content: pdfContent,
           document_name: selectedFiles.length > 0 ? selectedFiles[0].name : null,
           has_document: true,
+          law_category: lawCategory,
         });
       }
   
@@ -548,29 +601,41 @@ const Chat = () => {
   {message.content} 
 
   {(message.attachments?.length > 0 || message.hasDocument) && (
-  <div className="mt-2 space-y-1">
-    {/* Render any actual file objects if present */}
-    {message.attachments?.map((file, index) => (
-      <div
-        key={`attached-${message.id}-${index}`}
-        className="text-xs bg-accent/10 rounded-md p-1 px-2 flex items-center gap-1"
-      >
-        <FileText className="w-3 h-3" />
-        {message.documentName}
-      </div>
-    ))}
+    <div className="mt-2 space-y-1">
+      {/* Render any actual file objects if present */}
+      {message.attachments?.map((file, index) => (
+        <div
+          key={`attached-${message.id}-${index}`}
+          className="text-xs bg-accent/10 rounded-md p-1 px-2 flex items-center gap-1"
+        >
+          <FileText className="w-3 h-3" />
+          {message.documentName}
+          {/* Law Category Label for sent document */}
+          {index === 0 && message.lawCategory && message.lawCategory !== "Unknown" && (
+            <span className="ml-2 px-2 py-0.5 rounded bg-primary/10 text-primary font-semibold">
+              {message.lawCategory}
+            </span>
+          )}
+        </div>
+      ))}
 
-    {/* Fallback: render documentName if no attachments */}
-    {(!message.attachments?.length && message.hasDocument && message.documentName) && (
-      <div
-        className="text-xs bg-accent/10 rounded-md p-1 px-2 flex items-center gap-1"
-      >
-        <FileText className="w-3 h-3" />
-        {message.documentName}
-      </div>
-    )}
-  </div>
-)}
+      {/* Fallback: render documentName if no attachments */}
+      {(!message.attachments?.length && message.hasDocument && message.documentName) && (
+        <div
+          className="text-xs bg-accent/10 rounded-md p-1 px-2 flex items-center gap-1"
+        >
+          <FileText className="w-3 h-3" />
+          {message.documentName}
+          {/* Law Category Label for sent document */}
+          {message.lawCategory && message.lawCategory !== "Unknown" && (
+            <span className="ml-2 px-2 py-0.5 rounded bg-primary/10 text-primary font-semibold">
+              {message.lawCategory}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  )}
 
 
 </CardContent>
@@ -621,6 +686,12 @@ const Chat = () => {
                         <span className="truncate max-w-[150px]">
                           {file.name}
                         </span>
+                        {/* Law Category Label */}
+                        {lawCategory !== "Unknown" && !isProcessingFile && (
+                          <span className="ml-2 px-2 py-0.5 rounded bg-primary/10 text-primary font-semibold">
+                            {lawCategory}
+                          </span>
+                        )}
                         <button
                           type="button"
                           className="ml-1 text-muted-foreground hover:text-foreground"

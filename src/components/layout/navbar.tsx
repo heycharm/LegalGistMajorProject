@@ -25,7 +25,7 @@ export function Navbar() {
   };
 
   return (
-    <header className="fixed border-b top-0 left-0 w-full z-50 bg-background/95 backdrop-blur-md shadow-sm">
+    <header className="fixed top-0 left-0 w-full z-50 bg-background/95 backdrop-blur-md shadow-sm">
       <div className="container mx-auto px-4">
         <div className="flex items-center justify-between h-16 md:justify-between">
 
@@ -43,7 +43,7 @@ export function Navbar() {
           {/* Center - Logo */}
           <div className="flex-1 flex justify-center md:justify-start">
             <Link to="/" className="flex items-center space-x-2">
-              <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-primary to-primary/60 " >
+              <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-primary to-primary/60">
                 LegalGist
               </span>
             </Link>
@@ -61,7 +61,7 @@ export function Navbar() {
           </div>
 
           {/* Desktop navigation */}
-          <nav className="hidden md:flex items-center gap-4 mr-[-84px]">
+          <nav className="hidden md:flex items-center gap-4">
             <Link to="/" className="text-foreground/80 hover:text-primary transition-colors">
               Home
             </Link>
