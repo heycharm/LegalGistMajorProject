@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,6 +22,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { v4 as uuidv4 } from "uuid";
 import pdfjsLib from "@/lib/pdfWorker";
+import html2pdf from 'html2pdf.js';
 
 interface ChatDBMessage {
   id: string;
@@ -95,6 +96,13 @@ function classifyLaw(text: string): string[] {
   return sorted.filter(([_, score]) => score === sorted[0][1]).map(([cat]) => cat);
 }
 
+const loadingPhrases = [
+  'Analyzing precedent…',
+  'Reviewing court data…',
+  'Consulting legal texts…',
+  'Drafting response…',
+];
+
 const Chat = () => {
   const { user } = useAuth();
   const [messages, setMessages] = useState<Message[]>([
@@ -120,6 +128,10 @@ const Chat = () => {
   const navigate = useNavigate();
   const [pdfContent, setPdfContent] = useState<string | null>(null);
   const [lawCategory, setLawCategory] = useState<string>("Unknown");
+  const chatExportRef = useRef<HTMLDivElement>(null);
+  const [loadingPhraseIdx, setLoadingPhraseIdx] = useState(0);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [isReadOnly, setIsReadOnly] = useState(false);
 
   useEffect(() => {
     if (!conversationId) {
@@ -133,10 +145,14 @@ const Chat = () => {
   
     if (chatId) {
       loadChatById(chatId);
+      // If the chatId is in the URL, set read-only mode
+      if (params.get("id")) setIsReadOnly(true);
+      else setIsReadOnly(false);
     } else {
       const newId = uuidv4();
       localStorage.setItem("chatId", newId);
       setConversationId(newId);
+      setIsReadOnly(false);
       // setMessages([welcomeMessage]);
     }
   }, [location.search]);
@@ -151,22 +167,30 @@ const Chat = () => {
   const loadChatById = async (chatId: string) => {
     setIsLoadingChat(true);
     try {
+      // Fetch all messages for this conversation (root + replies)
       const { data: conversationData, error: conversationError } =
         await supabase
           .from("chats")
           .select("*")
-          .eq("conversation_id", chatId)
+          .or(`conversation_id.eq.${chatId},id.eq.${chatId}`)
           .order("created_at", { ascending: true });
 
       if (conversationError) throw conversationError;
 
       if (conversationData && conversationData.length > 0) {
-        console.log("Fetched conversation data:", conversationData);
-        setConversationId(chatId);
+        // Find the root message (id === chatId)
+        const rootMsg = conversationData.find(msg => msg.id === chatId);
+        // Set conversationId to root's conversation_id if present, else to root id
+        if (rootMsg) {
+          setConversationId(rootMsg.conversation_id || rootMsg.id);
+        } else {
+          setConversationId(chatId);
+        }
         processMessagesFromDB(conversationData);
         return;
       }
 
+      // Fallback: try to fetch a single message
       const { data: singleChatData, error: singleChatError } = await supabase
         .from("chats")
         .select("*")
@@ -184,30 +208,13 @@ const Chat = () => {
         return;
       }
 
-      const convId = singleChatData.conversation_id || chatId;
-      setConversationId(convId);
-
-      if (singleChatData.conversation_id) {
-        const { data: relatedMessages, error: relatedError } = await supabase
-          .from("chats")
-          .select("*")
-          .eq("conversation_id", singleChatData.conversation_id)
-          .order("created_at", { ascending: true });
-
-        if (relatedError) throw relatedError;
-
-        if (relatedMessages && relatedMessages.length > 0) {
-          processMessagesFromDB(relatedMessages);
-          return;
-        }
-      }
-
+      setConversationId(singleChatData.conversation_id || singleChatData.id);
       processMessagesFromDB([singleChatData]);
     } catch (error) {
       console.error("Error loading chat:", error);
       toast({
         title: "Error",
-        description: "Failed to load chat conversation",
+        description: error.message || JSON.stringify(error),
         variant: "destructive",
       });
 
@@ -453,6 +460,7 @@ const Chat = () => {
       attachments: selectedFiles.length > 0 ? selectedFiles : undefined,
       documentName: selectedFiles.length > 0 ? selectedFiles[0].name : undefined,
       hasDocument: selectedFiles.length > 0,
+      lawCategory: lawCategory,
     };
   
     setMessages((prev) => [...prev, userMessage]);
@@ -546,6 +554,39 @@ const Chat = () => {
     return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   };
 
+  // PDF export handler
+  const handleDownloadPDF = () => {
+    if (!chatExportRef.current) return;
+    const opt = {
+      margin:       0.5,
+      filename:     `LegalGist_Chat_${new Date().toISOString().slice(0,10)}.pdf`,
+      image:        { type: 'jpeg', quality: 0.98 },
+      html2canvas:  { scale: 2 },
+      jsPDF:        { unit: 'in', format: 'a4', orientation: 'portrait' },
+      pagebreak:    { mode: ['avoid-all', 'css', 'legacy'] }
+    };
+    html2pdf().set(opt).from(chatExportRef.current).save();
+  };
+
+  // Rotating loading phrase effect
+  useEffect(() => {
+    if (!isLoading) return;
+    setLoadingPhraseIdx(0);
+    const interval = setInterval(() => {
+      setLoadingPhraseIdx((idx) => (idx + 1) % loadingPhrases.length);
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [isLoading]);
+
+  // Helper to highlight matches in a line
+  function highlightMatches(line: string, term: string) {
+    if (!term) return line;
+    const regex = new RegExp(`(${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    return line.split(regex).map((part, i) =>
+      regex.test(part) ? <span key={i} className="bg-yellow-200 text-black rounded px-1">{part}</span> : part
+    );
+  }
+
   return (
     <div className="flex flex-col bg-background">
     <Navbar />
@@ -554,8 +595,43 @@ const Chat = () => {
         <ChatSidebar onStartNewChat={startNewChat} />
   
         <div className="flex flex-col flex-1 overflow-hidden">
+          {/* PDF Download & Share Button */}
+          <div className="flex justify-end px-4 pt-4">
+            <Button onClick={handleDownloadPDF} variant="outline" size="sm">
+              Download as PDF
+            </Button>
+          </div>
           {/* CHAT MESSAGES SCROLL AREA */}
-          <div className="flex-1 overflow-y-auto px-4 md:px-6 py-4 space-y-6 h-0 custom-scrollbar">
+          <div ref={chatExportRef} className="flex-1 px-4 md:px-6 py-4 space-y-6">
+            {/* PDF/Text Preview Search */}
+            {fileContents && (
+              <div className="mb-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <Input
+                    type="text"
+                    placeholder="Search in document..."
+                    value={searchTerm}
+                    onChange={e => setSearchTerm(e.target.value)}
+                    className="w-64"
+                  />
+                  {searchTerm && (
+                    <Button size="sm" variant="ghost" onClick={() => setSearchTerm("")}>Clear</Button>
+                  )}
+                </div>
+                <div className="max-h-60 overflow-y-auto border rounded bg-background p-2 text-xs font-mono whitespace-pre-wrap">
+                  {fileContents.split(/\r?\n/).map((line, idx) => (
+                    <div key={idx} className={searchTerm && line.toLowerCase().includes(searchTerm.toLowerCase()) ? "bg-yellow-100 rounded" : ""}>
+                      {highlightMatches(line, searchTerm)}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {/* PDF Header */}
+            <div className="text-center mb-4">
+              <h2 className="text-2xl font-bold">LegalGist Chat Conversation</h2>
+              <div className="text-sm text-muted-foreground">{new Date().toLocaleString()}</div>
+            </div>
             {isLoadingChat ? (
               <div className="flex items-center justify-center ">
                 <Loader2 className="h-6 w-6 animate-spin text-primary" />
@@ -653,12 +729,14 @@ const Chat = () => {
   
             {isLoading && (
               <div className="flex justify-start">
-                <div className="flex gap-3 max-w-[80%]">
+                <div className="flex gap-3 max-w-[80%] items-center">
                   <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center mt-1">
                     <Bot className="w-4 h-4 text-primary" />
                   </div>
-                  <div className="space-y-1">
-                    <div className="h-6 w-24 animate-pulse rounded-full bg-muted"></div>
+                  <div className="space-y-1 flex items-center">
+                    <div className="min-w-[180px] max-w-[260px] rounded bg-muted flex items-center px-3 py-1 text-sm font-medium text-muted-foreground animate-pulse whitespace-nowrap overflow-hidden text-ellipsis">
+                      {loadingPhrases[loadingPhraseIdx]}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -669,100 +747,114 @@ const Chat = () => {
   
           {/* INPUT AREA */}
           <div className="border-t p-3 bg-background">
-            <form onSubmit={handleSubmit} className="relative">
-              {selectedFiles.length > 0 && (
-                <div className="absolute bottom-full mb-2 left-0 right-0">
-                  <div className="bg-background/80 backdrop-blur-sm rounded-md p-2 flex flex-wrap gap-2 border">
-                    {selectedFiles.map((file, index) => (
-                      <div
-                        key={index}
-                        className="bg-accent/20 text-xs rounded-full px-2 py-1 flex items-center"
-                      >
-                        {isProcessingFile ? (
-                          <Loader2 className="h-3 w-3 animate-spin mr-1" />
-                        ) : (
-                          <FileText className="w-3 h-3 mr-1" />
-                        )}
-                        <span className="truncate max-w-[150px]">
-                          {file.name}
-                        </span>
-                        {/* Law Category Label */}
-                        {lawCategory !== "Unknown" && !isProcessingFile && (
-                          <span className="ml-2 px-2 py-0.5 rounded bg-primary/10 text-primary font-semibold">
-                            {lawCategory}
+            {isReadOnly && (
+              <div className="mb-2 text-center text-sm text-muted-foreground">
+                <span>This chat is in <b>read-only</b> mode. You cannot send messages or upload files.</span>
+              </div>
+            )}
+            {!isReadOnly && (
+              <>
+                <div className="flex gap-2 mb-2">
+                  <Button type="button" size="sm" variant="outline" onClick={() => setInput('Summarize this')}>Summarize this</Button>
+                  <Button type="button" size="sm" variant="outline" onClick={() => setInput('Explain legal implications')}>Explain legal implications</Button>
+                  <Button type="button" size="sm" variant="outline" onClick={() => setInput('Draft legal reply')}>Draft legal reply</Button>
+                </div>
+                <form onSubmit={handleSubmit} className="relative">
+                  {selectedFiles.length > 0 && (
+                    <div className="absolute bottom-full mb-2 left-0 right-0">
+                      <div className="bg-background/80 backdrop-blur-sm rounded-md p-2 flex flex-wrap gap-2 border">
+                        {selectedFiles.map((file, index) => (
+                          <div
+                            key={index}
+                            className="bg-accent/20 text-xs rounded-full px-2 py-1 flex items-center"
+                          >
+                            {isProcessingFile ? (
+                              <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                            ) : (
+                              <FileText className="w-3 h-3 mr-1" />
+                            )}
+                            <span className="truncate max-w-[150px]">
+                              {file.name}
+                            </span>
+                            {/* Law Category Label */}
+                            {lawCategory !== "Unknown" && !isProcessingFile && (
+                              <span className="ml-2 px-2 py-0.5 rounded bg-primary/10 text-primary font-semibold">
+                                {lawCategory}
+                              </span>
+                            )}
+                            <button
+                              type="button"
+                              className="ml-1 text-muted-foreground hover:text-foreground"
+                              onClick={() => handleRemoveFile(index)}
+                              disabled={isProcessingFile}
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </div>
+                        ))}
+                        {isProcessingFile && (
+                          <span className="text-xs text-muted-foreground">
+                            Processing document...
                           </span>
                         )}
-                        <button
-                          type="button"
-                          className="ml-1 text-muted-foreground hover:text-foreground"
-                          onClick={() => handleRemoveFile(index)}
-                          disabled={isProcessingFile}
-                        >
-                          <X className="h-3 w-3" />
-                        </button>
                       </div>
-                    ))}
-                    {isProcessingFile && (
-                      <span className="text-xs text-muted-foreground">
-                        Processing document...
-                      </span>
-                    )}
+                    </div>
+                  )}
+          
+                  <div className="relative flex items-center gap-2 bg-background rounded-lg border shadow-sm">
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      onChange={handleFileChange}
+                      className="hidden"
+                      accept=".pdf,.txt,.doc,.docx"
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      onClick={handleFileButtonClick}
+                      className="flex-shrink-0"
+                      aria-label="Attach file"
+                      disabled={isProcessingFile || isLoading}
+                    >
+                      {isProcessingFile ? (
+                        <Loader2 className="h-5 w-5 animate-spin" />
+                      ) : (
+                        <Paperclip className="h-5 w-5" />
+                      )}
+                    </Button>
+                    <Input
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      placeholder={
+                        fileContents
+                          ? "Ask about the uploaded document..."
+                          : "Ask about Indian Constitution or IPC..."
+                      }
+                      className="border-none focus-visible:ring-1 focus-visible:ring-primary h-10"
+                      disabled={isLoading}
+                    />
+                    <Button
+                      type="submit"
+                      variant="default"
+                      size="sm"
+                      className="flex-shrink-0"
+                      disabled={
+                        isLoading || (input.trim() === "" && !fileContents)
+                      }
+                    >
+                      {isLoading ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Send className="h-4 w-4" />
+                      )}
+                      <span className="sr-only">Send</span>
+                    </Button>
                   </div>
-                </div>
-              )}
-  
-              <div className="relative flex items-center gap-2 bg-background rounded-lg border shadow-sm">
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  onChange={handleFileChange}
-                  className="hidden"
-                  accept=".pdf,.txt,.doc,.docx"
-                />
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  onClick={handleFileButtonClick}
-                  className="flex-shrink-0"
-                  aria-label="Attach file"
-                  disabled={isProcessingFile || isLoading}
-                >
-                  {isProcessingFile ? (
-                    <Loader2 className="h-5 w-5 animate-spin" />
-                  ) : (
-                    <Paperclip className="h-5 w-5" />
-                  )}
-                </Button>
-                <Input
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  placeholder={
-                    fileContents
-                      ? "Ask about the uploaded document..."
-                      : "Ask about Indian Constitution or IPC..."
-                  }
-                  className="border-none focus-visible:ring-1 focus-visible:ring-primary h-10"
-                  disabled={isLoading}
-                />
-                <Button
-                  type="submit"
-                  variant="default"
-                  size="sm"
-                  className="flex-shrink-0"
-                  disabled={
-                    isLoading || (input.trim() === "" && !fileContents)
-                  }
-                >
-                  {isLoading ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Send className="h-4 w-4" />
-                  )}
-                  <span className="sr-only">Send</span>
-                </Button>
-              </div>
-            </form>
+                </form>
+              </>
+            )}
           </div>
         </div>
       </div>

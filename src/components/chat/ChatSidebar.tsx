@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { MessageSquare, Trash2, MessageSquarePlus } from "lucide-react";
+import { MessageSquare, Trash2, MessageSquarePlus, MoreVertical } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "@/components/ui/use-toast";
@@ -21,6 +21,13 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipProvider, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { Sheet, SheetTrigger, SheetContent } from "@/components/ui/sheet";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@/components/ui/dropdown-menu";
+import jsPDF from 'jspdf';
 
 interface ChatHistory {
   id: string;
@@ -34,6 +41,19 @@ interface ChatHistory {
 
 interface ChatSidebarProps {
   onStartNewChat?: () => void;
+}
+
+// Helper to render text with page breaks
+function renderTextWithPageBreak(doc, textLines, x, y, lineHeight, pageWidth, pageHeight, marginX, topMargin) {
+  for (let i = 0; i < textLines.length; i++) {
+    if (y > pageHeight - marginX) {
+      doc.addPage();
+      y = topMargin;
+    }
+    doc.text(textLines[i], x, y);
+    y += lineHeight;
+  }
+  return y;
 }
 
 export const ChatSidebar = ({ onStartNewChat }: ChatSidebarProps) => {
@@ -111,7 +131,10 @@ export const ChatSidebar = ({ onStartNewChat }: ChatSidebarProps) => {
   };
 
   const handleOpenChat = (chatId: string, conversationId: string | null) => {
-    navigate(`/chat?id=${conversationId || chatId}`);
+    // For owner's navigation, use /chat and set conversationId in localStorage
+    const convId = conversationId || chatId;
+    localStorage.setItem('chatId', convId);
+    navigate('/chat');
     setIsMobileSidebarOpen(false);
   };
 
@@ -159,6 +182,97 @@ export const ChatSidebar = ({ onStartNewChat }: ChatSidebarProps) => {
     });
   };
 
+  const downloadChatAsPDF = async (chat: ChatHistory) => {
+    try {
+      // Fetch all messages for this conversation (root + replies)
+      const conversationId = chat.conversation_id || chat.id;
+      const { data: messages, error } = await supabase
+        .from('chats')
+        .select('*')
+        .or(`conversation_id.eq.${conversationId},id.eq.${conversationId}`)
+        .order('created_at', { ascending: true });
+      if (error) throw error;
+      if (!messages || messages.length === 0) {
+        toast({ title: 'No messages found for this chat.' });
+        return;
+      }
+
+      // PDF setup
+      const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+      const marginX = 72; // 1 inch
+      let y = 60;
+      const bottomMargin = 72; // 1 inch
+      const lineHeight = 15;
+      const topMargin = 60;
+
+      // Header
+      doc.setFontSize(20);
+      doc.setTextColor('#1a202c');
+      doc.text('LegalGist Chat Conversation', pageWidth / 2, y, { align: 'center' });
+      y += 28;
+      doc.setFontSize(10);
+      doc.setTextColor('#6b7280');
+      doc.text(`Exported: ${new Date().toLocaleString()}`, pageWidth / 2, y, { align: 'center' });
+      y += 28;
+      doc.setDrawColor('#e5e7eb');
+      doc.setLineWidth(1);
+      doc.line(marginX, y, pageWidth - marginX, y);
+      y += 20;
+
+      // Messages
+      doc.setFont('helvetica');
+      messages.forEach((msg: any, idx: number) => {
+        // User message
+        if (msg.prompt || msg.message) {
+          const userContent = doc.splitTextToSize(msg.prompt || msg.message, pageWidth - 2 * marginX - 10);
+          const userBlockHeight = userContent.length * lineHeight + 16 + 8 + 12; // sender+time + text + divider + spacing
+          if (y + 16 > pageHeight - bottomMargin) {
+            doc.addPage();
+            y = topMargin;
+          }
+          doc.setFontSize(12);
+          doc.setTextColor('#059669'); // green
+          doc.text(`You  •  ${new Date(msg.created_at).toLocaleString()}`, marginX, y);
+          y += 16;
+          doc.setFontSize(11);
+          doc.setTextColor('#22223b');
+          y = renderTextWithPageBreak(doc, userContent, marginX + 10, y, lineHeight, pageWidth, pageHeight, marginX, topMargin);
+          y += 8;
+          doc.setDrawColor('#e5e7eb');
+          doc.setLineWidth(0.5);
+          doc.line(marginX, y, pageWidth - marginX, y);
+          y += 12;
+        }
+        // Bot message
+        if (msg.response) {
+          const botContent = doc.splitTextToSize(msg.response, pageWidth - 2 * marginX - 10);
+          if (y + 16 > pageHeight - bottomMargin) {
+            doc.addPage();
+            y = topMargin;
+          }
+          doc.setFontSize(12);
+          doc.setTextColor('#2563eb'); // blue
+          doc.text(`LegalGist Bot  •  ${new Date(msg.created_at).toLocaleString()}`, marginX, y);
+          y += 16;
+          doc.setFontSize(11);
+          doc.setTextColor('#111827');
+          y = renderTextWithPageBreak(doc, botContent, marginX + 10, y, lineHeight, pageWidth, pageHeight, marginX, topMargin);
+          y += 8;
+          doc.setDrawColor('#e5e7eb');
+          doc.setLineWidth(0.5);
+          doc.line(marginX, y, pageWidth - marginX, y);
+          y += 18;
+        }
+      });
+
+      doc.save(`LegalGist_Chat_${chat.id}.pdf`);
+    } catch (err) {
+      toast({ title: 'Failed to export PDF', description: err.message, variant: 'destructive' });
+    }
+  };
+
   const SidebarContentComponent = () => (
     <>
       <SidebarHeader className="border-b border-border/50 p-4 pt-16 flex justify-between items-center">
@@ -191,22 +305,43 @@ export const ChatSidebar = ({ onStartNewChat }: ChatSidebarProps) => {
               ) : chatHistory.length > 0 ? (
                 chatHistory.map((chat) => (
                   <SidebarMenuItem key={chat.id}>
-                    <SidebarMenuButton
-                      onClick={() => handleOpenChat(chat.id, chat.conversation_id)}
-                      className="w-full group hover:bg-accent/20 transition-colors"
-                    >
-                      <MessageSquare className="h-4 w-4" />
-                      <div className="flex-1 overflow-hidden">
-                        <p className="truncate font-medium">{chat.prompt || "New Conversation"}</p>
-                        <p className="text-xs text-muted-foreground">{formatDate(chat.created_at)}</p>
-                      </div>
-                    </SidebarMenuButton>
-                    <SidebarMenuAction
-                      onClick={(e) => handleDeleteChat(chat.id, chat.conversation_id, e)}
-                      className="opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      <Trash2 className="h-4 w-4 text-muted-foreground hover:text-destructive" />
-                    </SidebarMenuAction>
+                    <div className="flex w-full items-center justify-between">
+                      <SidebarMenuButton
+                        onClick={() => handleOpenChat(chat.id, chat.conversation_id)}
+                        className="flex-1 group hover:bg-accent/20 transition-colors text-left"
+                      >
+                        <div className="flex items-center">
+                          <MessageSquare className="h-4 w-4 mr-2" />
+                          <div className="overflow-hidden">
+                            <p className="truncate font-medium">{chat.prompt || "New Conversation"}</p>
+                            <p className="text-xs text-muted-foreground">{formatDate(chat.created_at)}</p>
+                          </div>
+                        </div>
+                      </SidebarMenuButton>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" className="ml-1">
+                            <MoreVertical className="h-4 w-4 text-muted-foreground" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              downloadChatAsPDF(chat);
+                            }}
+                          >
+                            Download
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={(e) => handleDeleteChat(chat.id, chat.conversation_id, e)}
+                            className="text-destructive"
+                          >
+                            Delete
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
                   </SidebarMenuItem>
                 ))
               ) : (
